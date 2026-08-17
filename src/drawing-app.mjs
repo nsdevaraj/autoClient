@@ -1,3 +1,5 @@
+import ort from '/vendor/ort.wasm.min.mjs';
+
 import {
   createApprovedCandidateIndex,
   createCandidateSuggestionSource,
@@ -18,19 +20,12 @@ import { loadIconRetrievalIndex } from './icon-retrieval.mjs';
 import { loadQuickDrawClassifier } from './quickdraw-classifier.mjs';
 import { loadSketchEmbedder } from './sketch-embedder.mjs';
 
-// Assets resolve against the app root that contains this module's folder, so the client works
-// from a sub-path mount and under any static file server, not only at the origin root.
-const APP_ROOT = new URL('../', import.meta.url);
-const assetUrl = path => new URL(path, APP_ROOT).href;
-
-const RUNTIME_URL = assetUrl('vendor/ort.wasm.min.mjs');
-const RUNTIME_WASM_DIRECTORY = assetUrl('vendor/');
-const MODEL_METADATA_URL = assetUrl('models/quickdraw-mvp/model.json');
-const MODEL_URL = assetUrl('models/quickdraw-mvp/quickdraw-mvp.onnx');
-const EMBEDDER_METADATA_URL = assetUrl('models/sketch-embedder/model.json');
-const EMBEDDER_MODEL_URL = assetUrl('models/sketch-embedder/sketch-embedder.onnx');
-const ICON_INDEX_URL = assetUrl('data/icon-embeddings/index.json');
-const CANDIDATES_URL = assetUrl('data/quickdraw-candidates.json');
+const MODEL_METADATA_URL = '/models/quickdraw-mvp/model.json';
+const MODEL_URL = '/models/quickdraw-mvp/quickdraw-mvp.onnx';
+const EMBEDDER_METADATA_URL = '/models/sketch-embedder/model.json';
+const EMBEDDER_MODEL_URL = '/models/sketch-embedder/sketch-embedder.onnx';
+const ICON_INDEX_URL = '/data/icon-embeddings/index.json';
+const CANDIDATES_URL = '/data/quickdraw-candidates.json';
 const SUGGESTION_LIMIT = 12;
 const RECOGNITION_DELAY = 120;
 
@@ -50,7 +45,6 @@ const strokeWidthInput = document.getElementById('strokeWidth');
 const toastElement = document.getElementById('toast');
 
 let drawing = createDrawingState();
-let ort;
 let suggestionSource;
 let activeModel;
 let activeStroke;
@@ -69,11 +63,10 @@ function setRuntimeStatus(message, state = '') {
   runtimeStatus.className = `runtime-status${state ? ` ${state}` : ''}`;
 }
 
-function toast(message, { persist = false } = {}) {
+function toast(message) {
   toastElement.textContent = message;
   toastElement.classList.add('visible');
   clearTimeout(toastTimer);
-  if (persist) return;
   toastTimer = setTimeout(() => toastElement.classList.remove('visible'), 1800);
 }
 
@@ -144,7 +137,7 @@ function renderCanvas() {
 let preferLocalIcons = new URLSearchParams(location.search).get('icons') === 'local';
 
 function localIconUrl(path) {
-  return assetUrl(`svgdepot/${path.split('/').map(encodeURIComponent).join('/')}`);
+  return new URL(`/svgdepot/${path.split('/').map(encodeURIComponent).join('/')}`, location.href).href;
 }
 
 function iconSources(icon) {
@@ -512,31 +505,27 @@ async function startCandidates() {
   }
 }
 
-// The runtime is imported on demand so a missing or mistyped /vendor/ asset reports a status
-// instead of aborting this module before any of it runs.
-async function loadRuntime() {
-  try {
-    const runtime = await import(RUNTIME_URL);
-    return runtime.default ?? runtime;
-  } catch (error) {
-    throw new Error(
-      `ONNX Runtime could not be loaded from ${RUNTIME_URL}. Serve the app root so vendor/, models/ and data/ are reachable. (${error.message || error})`,
-    );
+// A cold index scores only the probed clusters, so the rest of the corpus is fetched
+// after first paint; each loaded shard widens the search on the next stroke.
+function warmCorpus(source) {
+  if (typeof source.warm !== 'function') return;
+  const start = () => {
+    source.warm({ concurrency: 4 }).then(coverage => {
+      if (coverage.failed > 0 && coverage.vectors === 0) {
+        toast('Icon corpus could not be warmed; suggestions stay limited to probed clusters');
+      }
+    }).catch(() => {});
+  };
+  if (typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(start, { timeout: 3000 });
+  } else {
+    setTimeout(start, 1500);
   }
 }
 
 async function initialize() {
-  try {
-    ort = await loadRuntime();
-  } catch (error) {
-    setRuntimeStatus('Runtime unavailable', 'error');
-    clearSuggestions('Unavailable');
-    toast(error.message, { persist: true });
-    return;
-  }
-
   ort.env.wasm.numThreads = 1;
-  ort.env.wasm.wasmPaths = RUNTIME_WASM_DIRECTORY;
+  ort.env.wasm.wasmPaths = '/vendor/';
   let source;
   try {
     source = await startRetrieval();
@@ -547,7 +536,7 @@ async function initialize() {
     } catch (fallbackError) {
       setRuntimeStatus('Unavailable', 'error');
       clearSuggestions('Unavailable');
-      toast(fallbackError.message || String(fallbackError), { persist: true });
+      toast(fallbackError.message || String(fallbackError));
       return;
     }
   }
@@ -556,6 +545,7 @@ async function initialize() {
   setRuntimeStatus('Ready', 'ready');
   suggestionState.textContent = 'Ready';
   queueRecognition();
+  warmCorpus(source);
 }
 
 handleStageResize();

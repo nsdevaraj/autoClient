@@ -126,6 +126,19 @@ export function createIconRetrievalIndex(document, { baseUrl, embedder } = {}) {
     centroidScales: Float32Array.from(clustering.centroidScales),
     baseUrl: typeof baseUrl === 'string' && baseUrl.length > 0 ? baseUrl : './',
     cache: new Map(),
+    loaded: new Map(),
+  });
+}
+
+export function iconRetrievalCoverage(index) {
+  if (!index?.[RETRIEVAL_INDEX]) throw new Error('Invalid icon retrieval index');
+  let vectors = 0;
+  for (const shardId of index.loaded.keys()) vectors += index.shards[shardId].count;
+  return Object.freeze({
+    shards: index.loaded.size,
+    totalShards: index.shards.length,
+    vectors,
+    totalVectors: index.shards.reduce((total, shard) => total + shard.count, 0),
   });
 }
 
@@ -209,13 +222,15 @@ async function loadShard(index, shardId, fetchImpl) {
     await assertDigest(binary, shard.sha256, `Shard ${shardId}`);
 
     const codeBytes = shard.count * index.dim;
-    return Object.freeze({
+    const loaded = Object.freeze({
       codes: new Int8Array(binary.buffer, binary.byteOffset, codeBytes),
       scales: new Float32Array(
         binary.buffer.slice(binary.byteOffset + codeBytes, binary.byteOffset + shard.bytes),
       ),
       icons: await readShardMeta(meta, shard),
     });
+    index.loaded.set(shardId, loaded);
+    return loaded;
   })();
 
   index.cache.set(shardId, pending);
@@ -256,11 +271,18 @@ function lexicalPrior(entry, predictionByClass, predictionTokens) {
   return prior;
 }
 
+// The ranking is the same total order the old full sort produced: score first, then the
+// stable icon id, so results do not depend on how many shards happened to be resident.
+function ranksBefore(left, right) {
+  return left.score > right.score
+    || (left.score === right.score && left.entry[0] < right.entry[0]);
+}
+
 export async function retrieveIcons(index, {
   embedding,
   predictions = [],
   limit = 12,
-  probes = 4,
+  probes = 16,
   lexicalWeight = 0.25,
   fetchImpl = globalThis.fetch,
 } = {}) {
@@ -293,33 +315,50 @@ export async function retrieveIcons(index, {
   }
 
   const shardIds = probeOrder(index, embedding, probes);
-  const shards = await Promise.all(shardIds.map(id => loadShard(index, id, fetchImpl)));
+  // Shards already resident cost nothing to score, so a warmed index searches the whole
+  // corpus while a cold one still answers from the probed clusters alone.
+  const scanIds = new Set(shardIds);
+  for (const shardId of index.loaded.keys()) scanIds.add(shardId);
+  const shards = await Promise.all([...scanIds].map(id => loadShard(index, id, fetchImpl)));
 
-  const scored = [];
+  // A warmed index scores every icon in the corpus on each stroke, so the ranking keeps only
+  // the current best `limit` and never materialises the losers. The lexical prior can lift a
+  // score by at most `maxPrior`, so anything whose best possible score cannot reach the
+  // running cut-off is skipped before its filename is ever tokenized.
+  const cosineWeight = 1 - lexicalWeight;
+  const maxPrior = lexicalWeight > 0
+    ? predictionTokens.reduce((best, { probability }) => Math.max(best, probability), 0)
+    : 0;
+  const priorCeiling = lexicalWeight * maxPrior;
+
+  const ranked = [];
+  let cutoff = Number.NEGATIVE_INFINITY;
+  const { dim } = index;
   for (const shard of shards) {
-    for (let position = 0; position < shard.icons.length; position += 1) {
+    const { codes, scales, icons } = shard;
+    for (let position = 0; position < icons.length; position += 1) {
       let sum = 0;
-      const base = position * index.dim;
-      for (let axis = 0; axis < index.dim; axis += 1) {
-        sum += shard.codes[base + axis] * embedding[axis];
+      const base = position * dim;
+      for (let axis = 0; axis < dim; axis += 1) {
+        sum += codes[base + axis] * embedding[axis];
       }
-      const entry = shard.icons[position];
-      const cosine = sum * shard.scales[position];
+      const cosine = sum * scales[position];
+      if (ranked.length === limit && cosineWeight * cosine + priorCeiling < cutoff) continue;
+
+      const entry = icons[position];
       const prior = lexicalWeight > 0 ? lexicalPrior(entry, predictionByClass, predictionTokens) : 0;
-      scored.push({
-        entry,
-        cosine,
-        prior,
-        score: (1 - lexicalWeight) * cosine + lexicalWeight * prior,
-      });
+      const candidate = { entry, cosine, prior, score: cosineWeight * cosine + lexicalWeight * prior };
+      let slot = ranked.length;
+      while (slot > 0 && ranksBefore(candidate, ranked[slot - 1])) slot -= 1;
+      if (slot >= limit) continue;
+      ranked.splice(slot, 0, candidate);
+      if (ranked.length > limit) ranked.pop();
+      if (ranked.length === limit) cutoff = ranked[limit - 1].score;
     }
   }
 
-  scored.sort((left, right) => right.score - left.score || left.entry[0] - right.entry[0]);
-
   const suggestions = [];
-  for (const { entry, cosine, prior, score } of scored) {
-    if (suggestions.length === limit) break;
+  for (const { entry, cosine, prior, score } of ranked) {
     const [id, path, duplicates, auxClass] = entry;
     if (!Number.isInteger(id) || !isConfinedSvgPath(path)) {
       throw new Error(`Shard entry ${id} is malformed`);
@@ -343,6 +382,44 @@ export async function retrieveIcons(index, {
     suggestions.push(Object.freeze(suggestion));
   }
   return suggestions;
+}
+
+// Probing alone reads a couple of percent of the corpus per query, so the remaining shards
+// are pulled in the background until every icon in the pinned commit is searchable.
+export async function warmIconRetrievalIndex(index, {
+  fetchImpl = globalThis.fetch,
+  concurrency = 4,
+  signal,
+  onProgress,
+} = {}) {
+  if (!index?.[RETRIEVAL_INDEX]) throw new Error('Invalid icon retrieval index');
+  if (typeof fetchImpl !== 'function') throw new Error('A fetch implementation is required');
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new Error('Warm concurrency must be positive');
+  }
+
+  const queue = index.shards
+    .filter(shard => shard.count > 0 && !index.loaded.has(shard.id))
+    .map(shard => shard.id);
+
+  let cursor = 0;
+  let failed = 0;
+  const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+    while (cursor < queue.length) {
+      if (signal?.aborted) return;
+      const shardId = queue[cursor];
+      cursor += 1;
+      try {
+        await loadShard(index, shardId, fetchImpl);
+      } catch {
+        failed += 1;
+      }
+      onProgress?.(iconRetrievalCoverage(index));
+    }
+  });
+  await Promise.all(workers);
+
+  return Object.freeze({ ...iconRetrievalCoverage(index), failed });
 }
 
 export async function loadIconRetrievalIndex({
