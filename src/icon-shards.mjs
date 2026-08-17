@@ -28,6 +28,15 @@ export function iconShardIndex(path, shardCount) {
   return iconPathHash(path) % shardCount;
 }
 
+// jsDelivr resolves a GitHub package by released version, so shards are pinned to an immutable
+// release tag. The commit stays recorded alongside it as provenance for the published tree.
+export const PINNED_ICON_REF = /^(?:[0-9a-f]{40}|v\d+\.\d+\.\d+)$/;
+
+export function iconShardRef(shard) {
+  const ref = typeof shard?.tag === 'string' && shard.tag.length > 0 ? shard.tag : shard?.commit;
+  return typeof ref === 'string' && PINNED_ICON_REF.test(ref) ? ref : null;
+}
+
 export function iconShardSources(source) {
   const shards = source?.shards;
   return Array.isArray(shards) && shards.length > 0 ? shards : null;

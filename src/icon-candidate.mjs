@@ -1,4 +1,4 @@
-import { resolveIconShard } from './icon-shards.mjs';
+import { PINNED_ICON_REF, iconShardRef, resolveIconShard } from './icon-shards.mjs';
 
 export function isConfinedSvgPath(value) {
   if (typeof value !== 'string' || !value.endsWith('.svg') || value.includes('\\')) return false;
@@ -38,8 +38,9 @@ export function expectedIconUrl(source, path) {
   if (typeof path !== 'string') return null;
   const shard = resolveIconShard(source, path);
   const repository = repositorySlug(shard?.repository);
-  if (!repository || !/^[0-9a-f]{40}$/.test(shard?.commit ?? '')) return null;
-  return `https://cdn.jsdelivr.net/gh/${repository}@${shard.commit}/${encodedPath(path)}`;
+  const ref = iconShardRef(shard);
+  if (!repository || !ref) return null;
+  return `https://cdn.jsdelivr.net/gh/${repository}@${ref}/${encodedPath(path)}`;
 }
 
 export function isApprovedIconUrl(value, path, source) {
@@ -48,7 +49,7 @@ export function isApprovedIconUrl(value, path, source) {
   if (source) return expected !== null && value === expected;
   try {
     const url = new URL(value);
-    const match = url.pathname.match(/^\/gh\/[^/]+\/[^/@]+@([0-9a-f]{40})\/(.+)$/);
+    const match = url.pathname.match(/^\/gh\/[^/]+\/[^/@]+@([^/]+)\/(.+)$/);
     return url.protocol === 'https:'
       && url.hostname === 'cdn.jsdelivr.net'
       && !url.username
@@ -57,6 +58,7 @@ export function isApprovedIconUrl(value, path, source) {
       && !url.search
       && !url.hash
       && match !== null
+      && PINNED_ICON_REF.test(match[1])
       && decodeURIComponent(match[2]) === path;
   } catch {
     return false;

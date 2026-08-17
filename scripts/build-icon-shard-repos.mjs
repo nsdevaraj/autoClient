@@ -25,6 +25,8 @@ const DEFAULTS = {
   limit: null,
   publish: false,
   apply: false,
+  skipBuild: false,
+  tag: 'v1.0.0',
 };
 
 function printHelp() {
@@ -42,6 +44,8 @@ Options:
   --only <id>           Build a single shard, for verification
   --limit <count>       Materialise at most this many icons, for a smoke test
   --publish             Create the GitHub repositories and push them
+  --skip-build          Reuse trees already materialised in --out
+  --tag <version>       Release tag jsDelivr serves (default: ${DEFAULTS.tag})
   --apply               Rewrite data manifests from a built shard-sources.json
   --help                Show this help
 
@@ -58,6 +62,7 @@ function parseArgs(argv) {
       process.exit(0);
     }
     if (argument === '--publish') { options.publish = true; continue; }
+    if (argument === '--skip-build') { options.skipBuild = true; continue; }
     if (argument === '--apply') { options.apply = true; continue; }
 
     const value = argv[index + 1];
@@ -67,6 +72,7 @@ function parseArgs(argv) {
     else if (argument === '--shards') options.shards = Number(value);
     else if (argument === '--owner') options.owner = value;
     else if (argument === '--prefix') options.prefix = value;
+    else if (argument === '--tag') options.tag = value;
     else if (argument === '--only') options.only = Number(value);
     else if (argument === '--limit') options.limit = Number(value);
     else throw new Error(`Unknown option: ${argument}`);
@@ -168,6 +174,19 @@ function buildShards(options) {
   return { stats, unavailable, written };
 }
 
+function pushWithRetry(root, slug, attempts = 5, args = ['push', '-q', '--force', '-u', 'origin', 'main']) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const result = git(root, args, { allowFailure: true });
+    if (result.status === 0) return;
+    if (attempt === attempts) {
+      throw new Error(`pushing ${slug} failed after ${attempts} attempts: ${result.stderr || result.stdout}`);
+    }
+    const backoff = attempt * 10;
+    console.log(`  push of ${slug} failed, retrying in ${backoff}s (attempt ${attempt + 1}/${attempts})`);
+    spawnSync('sleep', [String(backoff)]);
+  }
+}
+
 function publishShards(options, stats) {
   const sources = [];
   for (const shard of stats) {
@@ -185,20 +204,45 @@ function publishShards(options, stats) {
     }
 
     const slug = `${options.owner}/${name}`;
-    const exists = spawnSync('gh', ['repo', 'view', slug], { encoding: 'utf8' }).status === 0;
-    if (!exists) {
+    git(root, ['remote', 'remove', 'origin'], { allowFailure: true });
+    git(root, ['remote', 'add', 'origin', `https://github.com/${slug}.git`]);
+    // Each shard pushes tens of MB in one pack, which HTTPS proxies often reset mid-transfer.
+    git(root, ['config', 'http.postBuffer', '524288000']);
+    git(root, ['config', 'http.version', 'HTTP/1.1']);
+
+    // Existence is probed over git rather than the API, because the GitHub GraphQL endpoint
+    // returns transient 503s that must not be mistaken for a missing repository.
+    const probe = git(root, ['ls-remote', 'origin'], { allowFailure: true });
+    if (probe.status !== 0) {
       const created = spawnSync('gh', ['repo', 'create', slug, '--public',
         '--description', `SVGDepot icon corpus shard ${shard.id} of ${options.shards}`],
       { encoding: 'utf8' });
-      if (created.status !== 0) throw new Error(`gh repo create ${slug} failed: ${created.stderr}`);
+      if (created.status !== 0 && !/already exists/i.test(`${created.stderr}${created.stdout}`)) {
+        throw new Error(`gh repo create ${slug} failed: ${created.stderr || created.stdout}`);
+      }
     }
-    git(root, ['remote', 'remove', 'origin'], { allowFailure: true });
-    git(root, ['remote', 'add', 'origin', `https://github.com/${slug}.git`]);
-    git(root, ['push', '-q', '--force', '-u', 'origin', 'main']);
 
     const commit = git(root, ['rev-parse', 'HEAD']).stdout.trim();
-    sources.push({ id: shard.id, repository: `https://github.com/${slug}.git`, commit });
-    console.log(`published ${slug} @ ${commit} (${shard.files} icons)`);
+    const remote = git(root, ['ls-remote', 'origin', 'refs/heads/main'], { allowFailure: true });
+    if (remote.status === 0 && remote.stdout.startsWith(commit)) {
+      console.log(`skipped ${slug} @ ${commit} (already pushed)`);
+    } else {
+      pushWithRetry(root, slug);
+      console.log(`published ${slug} @ ${commit}${shard.files ? ` (${shard.files} icons)` : ''}`);
+    }
+
+    // jsDelivr resolves a GitHub package by released version, so an untagged push stays
+    // unreachable no matter how small it is.
+    const tagged = git(root, ['rev-parse', `refs/tags/${options.tag}`], { allowFailure: true });
+    if (tagged.status !== 0) {
+      git(root, ['tag', '-a', options.tag, '-m', `Icon shard ${shard.id} of ${options.shards}`]);
+    }
+    const remoteTag = git(root, ['ls-remote', 'origin', `refs/tags/${options.tag}`], { allowFailure: true });
+    if (remoteTag.status !== 0 || !remoteTag.stdout.trim()) {
+      pushWithRetry(root, `${slug} tag ${options.tag}`, 5, ['push', '-q', 'origin', options.tag]);
+      console.log(`  tagged ${slug} ${options.tag}`);
+    }
+    sources.push({ id: shard.id, repository: `https://github.com/${slug}.git`, commit, tag: options.tag });
   }
 
   const target = join(options.out, 'shard-sources.json');
@@ -218,7 +262,7 @@ function applyShardSources(options) {
   const shards = published.sources
     .slice()
     .sort((left, right) => left.id - right.id)
-    .map(({ repository, commit }) => ({ repository, commit }));
+    .map(({ repository, commit, tag }) => (tag ? { repository, commit, tag } : { repository, commit }));
 
   const candidatesPath = resolve(PROJECT_ROOT, 'data/quickdraw-candidates.json');
   const candidates = readJson(candidatesPath);
@@ -247,15 +291,22 @@ try {
   if (options.apply) {
     applyShardSources(options);
   } else {
-    const { stats, unavailable, written } = buildShards(options);
-    console.log(`materialised ${written} icons (${unavailable} unavailable) into ${options.out}`);
-    for (const shard of stats) {
-      if (options.only !== null && shard.id !== options.only) continue;
-      console.log(`  ${shardName(options, shard.id)}: ${shard.files} icons, ${(shard.bytes / 1048576).toFixed(1)} MB`);
-    }
-    const largest = Math.max(...stats.map(shard => shard.bytes));
-    if (largest > 50 * 1024 * 1024) {
-      console.warn(`warning: largest shard is ${(largest / 1048576).toFixed(1)} MB, over the 50 MB jsDelivr limit`);
+    let stats;
+    if (options.skipBuild) {
+      stats = Array.from({ length: options.shards }, (_, id) => ({ id, files: 0, bytes: 0 }));
+      console.log(`reusing trees already materialised in ${options.out}`);
+    } else {
+      const built = buildShards(options);
+      stats = built.stats;
+      console.log(`materialised ${built.written} icons (${built.unavailable} unavailable) into ${options.out}`);
+      for (const shard of stats) {
+        if (options.only !== null && shard.id !== options.only) continue;
+        console.log(`  ${shardName(options, shard.id)}: ${shard.files} icons, ${(shard.bytes / 1048576).toFixed(1)} MB`);
+      }
+      const largest = Math.max(...stats.map(shard => shard.bytes));
+      if (largest > 50 * 1024 * 1024) {
+        console.warn(`warning: largest shard is ${(largest / 1048576).toFixed(1)} MB, over the 50 MB jsDelivr limit`);
+      }
     }
     if (options.publish) publishShards(options, stats);
   }

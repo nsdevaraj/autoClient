@@ -26,10 +26,13 @@ function validatedShardSources(shards) {
       !isRecord(shard)
       || typeof shard.repository !== 'string'
       || !/^[0-9a-f]{40}$/.test(shard.commit ?? '')
+      || (shard.tag !== undefined && !/^v\d+\.\d+\.\d+$/.test(shard.tag))
     ) {
       throw new Error(`Icon index shard source ${id} must pin a repository and commit`);
     }
-    return Object.freeze({ repository: shard.repository, commit: shard.commit });
+    return Object.freeze(shard.tag === undefined
+      ? { repository: shard.repository, commit: shard.commit }
+      : { repository: shard.repository, commit: shard.commit, tag: shard.tag });
   }));
 }
 
