@@ -1,5 +1,6 @@
 # AutoDraw Client
 
+Demo https://nsdevaraj.github.io/autoClient/
 A standalone AutoDraw web client: sketch on the canvas, and the app recognises the drawing
 in the browser and offers matching icons that replace the sketch. Everything runs locally —
 the ONNX models, the icon retrieval index and the static server are all in this folder.
