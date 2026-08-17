@@ -111,6 +111,11 @@ and remembers that choice for the rest of the session.
 Both model wrappers verify the metadata contract (tensor names, shapes, class lists) before
 running inference, and the retrieval index verifies every shard hash it loads.
 
+The ONNX Runtime bundle in `vendor/` ships without its source map, so the trailing
+`//# sourceMappingURL=ort.wasm.min.mjs.map` comment is stripped from `ort.wasm.min.mjs`. Leaving
+it in makes every browser with developer tools open request a file that was never vendored. Strip
+it again when re-vendoring the runtime, or vendor the matching `.map` alongside it.
+
 ## Security notes
 
 - The server only serves an explicit allowlist of routes and rejects anything resolving
