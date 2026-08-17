@@ -56,6 +56,12 @@ lookup table ships with the client and the split is reproducible. `data/quickdra
 and `data/icon-embeddings/index.json` list the pinned shard repositories under `source.shards`;
 a manifest without that list still resolves against its single `source.repository`.
 
+Each shard is referenced by an immutable **release tag** (`v1.0.0`), because jsDelivr resolves a
+GitHub package by released version — an untagged repository is unreachable even when it is well
+under the size limit, and branch or bare-commit references are not served. The commit is still
+recorded next to the tag as provenance, and only a 40-character commit or a `vX.Y.Z` tag is ever
+accepted as a pin, so a mutable reference such as `@main` can never be approved.
+
 Use `scripts/build-icon-shard-repos.mjs` to rebuild the split:
 
 ```sh

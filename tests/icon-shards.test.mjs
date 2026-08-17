@@ -70,6 +70,29 @@ test('shard URLs stay approved when no source is supplied', () => {
   assert.ok(isApprovedIconUrl(url, ICON_PATH));
 });
 
+test('a shard pinned to a release tag builds its URL from that tag', () => {
+  const tagged = {
+    ...SHARDED_SOURCE,
+    shards: SHARDED_SOURCE.shards.map(shard => ({ ...shard, tag: 'v1.0.0' })),
+  };
+  const shard = iconShardIndex(ICON_PATH, tagged.shards.length);
+  const url = expectedIconUrl(tagged, ICON_PATH);
+  assert.equal(
+    url,
+    `https://cdn.jsdelivr.net/gh/owner/cdn-0${shard}@v1.0.0`
+      + '/Icon%20Libraries%20%26%20Named%20Packs/bowtie-icons/358668-cloud.svg',
+  );
+  assert.ok(isApprovedIconUrl(url, ICON_PATH, tagged));
+  assert.ok(isApprovedIconUrl(url, ICON_PATH));
+});
+
+test('a mutable branch reference is never approved', () => {
+  const branch = 'https://cdn.jsdelivr.net/gh/owner/cdn-00@main'
+    + '/Icon%20Libraries%20%26%20Named%20Packs/bowtie-icons/358668-cloud.svg';
+  assert.equal(isApprovedIconUrl(branch, ICON_PATH), false);
+  assert.equal(expectedIconUrl({ repository: 'https://github.com/o/r.git', commit: 'main' }, ICON_PATH), null);
+});
+
 test('a malformed shard list does not produce a URL', () => {
   assert.equal(expectedIconUrl({ ...SINGLE_SOURCE, shards: [{ repository: 'https://github.com/o/r.git' }] }, ICON_PATH), null);
   assert.equal(expectedIconUrl(SHARDED_SOURCE, 42), null);
