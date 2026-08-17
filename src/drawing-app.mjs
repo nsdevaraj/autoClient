@@ -167,25 +167,41 @@ function loadIconImage(image, icon) {
   const local = localIconUrl(icon.path);
   const { primary, fallback, primaryIsLocal } = iconSources(icon);
   let retries = 0;
+  image.classList.add('is-loading');
+
+  const settle = failed => {
+    image.classList.remove('is-loading');
+    image.classList.toggle('is-failed', failed);
+  };
+
   image.addEventListener('load', () => {
     if (image.src !== local) cdnIconsWorking = true;
+    settle(false);
   });
   image.addEventListener('error', () => {
-    if (image.src === local) localIconsMissing = true;
+    const failedSrc = image.src;
+    // Dropping src to force a retry points the element at the document for a moment, and that
+    // failure says nothing about either icon source.
+    if (failedSrc !== primary && failedSrc !== fallback) return;
+    if (failedSrc === local) localIconsMissing = true;
     // Only the primary source is retried: reaching here again means the fallback failed too,
     // and swapping back would loop over two dead sources.
-    if (image.src !== primary) return;
+    if (failedSrc !== primary) {
+      settle(true);
+      return;
+    }
     if (fallback === local && (localIconsMissing || cdnIconsWorking)) {
       // A cold CDN package answers with an error for tens of seconds before it becomes
-      // servable, so the icon is retried a couple of times rather than left blank. Clearing
-      // src first forces a fresh request instead of reusing the failed one.
+      // servable, so the icon keeps its loading state across a couple of retries.
       if (retries < 2) {
         retries += 1;
         setTimeout(() => {
-          image.src = '';
+          image.removeAttribute('src');
           image.src = primary;
         }, retries * 8000);
+        return;
       }
+      settle(true);
       return;
     }
     // Assigning the opposite of the source that just failed keeps a whole batch of

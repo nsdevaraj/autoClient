@@ -231,6 +231,28 @@
       background-position: 0 0, 0 6px, 6px -6px, -6px 0;
     }
 
+    /* A cold CDN package can take tens of seconds to answer, so a pending icon shimmers rather
+       than sitting on the same checkerboard that a loaded transparent icon shows. The offsets
+       stay within the box so the gradient always covers it. */
+    .suggestion-button img.is-loading,
+    .suggestion-button img.is-failed {
+      background-image: linear-gradient(90deg, #e7e4d8 0%, #faf9f5 50%, #e7e4d8 100%);
+      background-size: 200% 100%;
+      background-position: 100% 0;
+      background-repeat: no-repeat;
+    }
+
+    .suggestion-button img.is-loading { animation: icon-shimmer 1.3s ease-in-out infinite; }
+
+    .suggestion-button img.is-failed { background-image: none; background-color: #f1eee4; }
+
+    .placed-icon.is-loading { opacity: 0.45; }
+
+    @keyframes icon-shimmer {
+      from { background-position: 100% 0; }
+      to { background-position: 0 0; }
+    }
+
     .suggestion-button span {
       overflow: hidden;
       padding: 5px 6px;
@@ -427,7 +449,7 @@
 
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
-    }
+      .suggestion-button img.is-loading { animation: none; background-position: 50% 0; }    }
   </style>
 </head>
 <body>
