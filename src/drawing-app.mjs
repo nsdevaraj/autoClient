@@ -142,6 +142,14 @@ function renderCanvas() {
 // the bundled server runs, so it is the fallback (and can be forced with ?icons=local for an
 // offline .cache/svgdepot). Whichever source answers first wins for the rest of the session.
 let preferLocalIcons = new URLSearchParams(location.search).get('icons') === 'local';
+// A plain static server has no /svgdepot/ route at all, so the first local icon that fails marks
+// the route absent for the session. Without this, one transient CDN failure switches every later
+// icon to a route that answers 404 and never switches back.
+let localIconsMissing = false;
+// A cold jsDelivr package can answer slowly enough to fail, and its plain-text error body is
+// blocked outright when it loads as an image. Once the CDN has served any icon those failures are
+// treated as transient rather than as a reason to move the session to the other source.
+let cdnIconsWorking = false;
 
 function localIconUrl(path) {
   return assetUrl(`svgdepot/${path.split('/').map(encodeURIComponent).join('/')}`);
@@ -149,21 +157,42 @@ function localIconUrl(path) {
 
 function iconSources(icon) {
   const local = localIconUrl(icon.path);
-  const primaryIsLocal = preferLocalIcons;
+  const primaryIsLocal = preferLocalIcons && !localIconsMissing;
   return primaryIsLocal
     ? { primary: local, fallback: icon.url, primaryIsLocal }
     : { primary: icon.url, fallback: local, primaryIsLocal };
 }
 
 function loadIconImage(image, icon) {
+  const local = localIconUrl(icon.path);
   const { primary, fallback, primaryIsLocal } = iconSources(icon);
+  let retries = 0;
+  image.addEventListener('load', () => {
+    if (image.src !== local) cdnIconsWorking = true;
+  });
   image.addEventListener('error', () => {
-    if (image.src === fallback) return;
+    if (image.src === local) localIconsMissing = true;
+    // Only the primary source is retried: reaching here again means the fallback failed too,
+    // and swapping back would loop over two dead sources.
+    if (image.src !== primary) return;
+    if (fallback === local && (localIconsMissing || cdnIconsWorking)) {
+      // A cold CDN package answers with an error for tens of seconds before it becomes
+      // servable, so the icon is retried a couple of times rather than left blank. Clearing
+      // src first forces a fresh request instead of reusing the failed one.
+      if (retries < 2) {
+        retries += 1;
+        setTimeout(() => {
+          image.src = '';
+          image.src = primary;
+        }, retries * 8000);
+      }
+      return;
+    }
     // Assigning the opposite of the source that just failed keeps a whole batch of
     // simultaneous failures from toggling the preference back and forth.
     preferLocalIcons = !primaryIsLocal;
     image.src = fallback;
-  }, { once: true });
+  });
   image.src = primary;
 }
 
