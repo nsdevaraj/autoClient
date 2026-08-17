@@ -16,6 +16,23 @@ function decodeBase64(value) {
   return bytes;
 }
 
+function validatedShardSources(shards) {
+  if (shards === undefined) return null;
+  if (!Array.isArray(shards) || shards.length === 0) {
+    throw new Error('Icon index shard sources must be a non-empty array');
+  }
+  return Object.freeze(shards.map((shard, id) => {
+    if (
+      !isRecord(shard)
+      || typeof shard.repository !== 'string'
+      || !/^[0-9a-f]{40}$/.test(shard.commit ?? '')
+    ) {
+      throw new Error(`Icon index shard source ${id} must pin a repository and commit`);
+    }
+    return Object.freeze({ repository: shard.repository, commit: shard.commit });
+  }));
+}
+
 function validatedSource(source) {
   if (
     !isRecord(source)
@@ -24,7 +41,10 @@ function validatedSource(source) {
   ) {
     throw new Error('Icon index must pin a repository and commit');
   }
-  return Object.freeze({ repository: source.repository, commit: source.commit });
+  const shards = validatedShardSources(source.shards);
+  return Object.freeze(shards
+    ? { repository: source.repository, commit: source.commit, shards }
+    : { repository: source.repository, commit: source.commit });
 }
 
 function validatedShards(shards, dim) {

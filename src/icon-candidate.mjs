@@ -1,3 +1,5 @@
+import { resolveIconShard } from './icon-shards.mjs';
+
 export function isConfinedSvgPath(value) {
   if (typeof value !== 'string' || !value.endsWith('.svg') || value.includes('\\')) return false;
   const segments = value.split('/');
@@ -31,10 +33,13 @@ function encodedPath(path) {
   return path.split('/').map(encodeURIComponent).join('/');
 }
 
+// The corpus spans several pinned repositories, so the path selects which one holds it.
 export function expectedIconUrl(source, path) {
-  const repository = repositorySlug(source?.repository);
-  if (!repository || !/^[0-9a-f]{40}$/.test(source?.commit ?? '')) return null;
-  return `https://cdn.jsdelivr.net/gh/${repository}@${source.commit}/${encodedPath(path)}`;
+  if (typeof path !== 'string') return null;
+  const shard = resolveIconShard(source, path);
+  const repository = repositorySlug(shard?.repository);
+  if (!repository || !/^[0-9a-f]{40}$/.test(shard?.commit ?? '')) return null;
+  return `https://cdn.jsdelivr.net/gh/${repository}@${shard.commit}/${encodedPath(path)}`;
 }
 
 export function isApprovedIconUrl(value, path, source) {

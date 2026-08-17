@@ -49,6 +49,21 @@ Icons themselves are not bundled. By default the browser loads each icon straigh
 **commit-pinned jsDelivr URL** — the approved URL the index derives — so icons work under any
 static server and need public network access.
 
+Because jsDelivr refuses to serve a GitHub package larger than 50 MB and the corpus is ~511 MB
+across ~210k icons, the icons are published as several sub-50 MB repositories rather than one.
+The repository holding a path is derived from the path itself (`src/icon-shards.mjs`), so no
+lookup table ships with the client and the split is reproducible. `data/quickdraw-candidates.json`
+and `data/icon-embeddings/index.json` list the pinned shard repositories under `source.shards`;
+a manifest without that list still resolves against its single `source.repository`.
+
+Use `scripts/build-icon-shard-repos.mjs` to rebuild the split:
+
+```sh
+node scripts/build-icon-shard-repos.mjs                    # materialise the trees only
+node scripts/build-icon-shard-repos.mjs --publish          # also create the repos and push
+node scripts/build-icon-shard-repos.mjs --apply            # repoint the manifests at the pins
+```
+
 The server also exposes `/svgdepot/<path>`, which serves an optional local cache
 (`.cache/svgdepot/`) and otherwise proxies the same pinned URL. Add `?icons=local` to the page
 URL to prefer that route, which keeps icon traffic same-origin (and fully offline when the
@@ -70,9 +85,11 @@ and remembers that choice for the rest of the session.
 | `src/sketch-rasterizer.mjs` | Polyline/stroke-3 normalisation and rasterisation |
 | `src/icon-retrieval.mjs` | Shard loading, hash checks and nearest-neighbour search |
 | `src/icon-candidate.mjs` | Approval rules for commit-pinned icon URLs and paths |
+| `src/icon-shards.mjs` | Derives which pinned repository holds an icon path |
 | `src/icon-proxy.mjs` | Size-bounded, cached SVG proxy for approved icons |
 | `src/static-server.mjs` | Allowlisted static handler plus the `/svgdepot/` route |
 | `scripts/serve.mjs` | CLI wrapper around the static handler |
+| `scripts/build-icon-shard-repos.mjs` | Splits the icon corpus into sub-50 MB repositories |
 
 ## Model files
 
