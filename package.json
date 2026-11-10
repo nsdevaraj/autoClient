@@ -5,6 +5,8 @@
   "description": "Standalone AutoDraw web client: sketch on a canvas and swap strokes for icon suggestions from local ONNX models.",
   "type": "module",
   "scripts": {
+    "check:assets": "node scripts/check-assets.mjs",
+    "prestart": "npm run check:assets",
     "start": "node scripts/serve.mjs",
     "test": "node --test"
   }

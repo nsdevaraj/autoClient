@@ -11,10 +11,23 @@ the ONNX models, the icon retrieval index and the static server are all in this 
 npm start            # http://127.0.0.1:4173/
 npm start -- --port 8080 --host 0.0.0.0
 npm test             # node --test
+npm run check:assets # validate runtime assets without starting the server
 ```
 
 No install step and no dependencies: the ONNX Runtime Web build is vendored in `vendor/`.
 Node 20+ is required.
+
+`npm start` checks the bundled assets before opening the server. The Pages workflow runs
+the same check and the tests before uploading the site. The check validates WebAssembly,
+rejects missing, empty, or Git LFS pointer model files, and verifies icon-index shard sizes
+and SHA-256 hashes against the manifest. It does not validate ONNX tensor contracts;
+the browser model wrappers perform those checks when loading a session.
+
+This repository commits its binaries directly, so Git LFS is not needed for a normal clone.
+If you copy the app from an LFS-managed checkout, restore its assets there first:
+`git lfs install --local` followed by `git lfs pull`. A file beginning with
+`version https://git-lfs.github.com/spec/v1` is a pointer, not a binary; serving it as WASM
+causes `expected magic word 00 61 73 6d, found 76 65 72 73`.
 
 ### Serving it another way
 
@@ -27,6 +40,9 @@ npx http-server . -p 8080 -c-1     # or: python3 -m http.server 8080
 
 All asset URLs are resolved relative to the app folder, so mounting the app under a sub-path
 (`https://example.com/autodraw/`) works too.
+
+When using another static server, run `npm run check:assets` first; those servers do not
+run the startup preflight.
 
 Two caveats when not using `npm start`:
 
@@ -96,6 +112,7 @@ and remembers that choice for the rest of the session.
 | `src/icon-proxy.mjs` | Size-bounded, cached SVG proxy for approved icons |
 | `src/static-server.mjs` | Allowlisted static handler plus the `/svgdepot/` route |
 | `scripts/serve.mjs` | CLI wrapper around the static handler |
+| `scripts/check-assets.mjs` | Startup/deployment preflight for runtime binaries and index shards |
 | `scripts/build-icon-shard-repos.mjs` | Splits the icon corpus into sub-50 MB repositories |
 
 ## Model files
